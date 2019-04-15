@@ -3051,6 +3051,8 @@ typedef void  (GL_APIENTRY *PFN_glFrontFace)(GLenum mode);
 static PFN_glFrontFace _sapp_glFrontFace;
 typedef void  (GL_APIENTRY *PFN_glCullFace)(GLenum mode);
 static PFN_glCullFace _sapp_glCullFace;
+typedef void  (GL_APIENTRY* PFN_glGenerateMipmap)(GLenum target);
+static PFN_glGenerateMipmap _sapp_glGenerateMipmap;
 
 _SOKOL_PRIVATE void* _sapp_win32_glgetprocaddr(const char* name) {
     void* proc_addr = (void*) _sapp_wglGetProcAddress(name);
@@ -3253,6 +3255,7 @@ _SOKOL_PRIVATE  void _sapp_win32_gl_loadfuncs(void) {
 #define glGenVertexArrays _sapp_glGenVertexArrays
 #define glFrontFace _sapp_glFrontFace
 #define glCullFace _sapp_glCullFace
+#define glGenerateMipmap _sapp_glGenerateMipmap
 
 #endif /* SOKOL_WIN32_NO_GL_LOADER */
 

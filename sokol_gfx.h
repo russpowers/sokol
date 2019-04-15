@@ -1211,6 +1211,7 @@ typedef struct sg_image_content {
     .height             0 (must be set to >0)
     .depth/.layers:     1
     .num_mipmaps:       1
+    .autogen_mipmaps:   false
     .usage:             SG_USAGE_IMMUTABLE
     .pixel_format:      SG_PIXELFORMAT_RGBA8
     .sample_count:      1 (only used in render_targets)
@@ -1257,6 +1258,7 @@ typedef struct sg_image_desc {
         int layers;
     };
     int num_mipmaps;
+    bool autogen_mipmaps;
     sg_usage usage;
     sg_pixel_format pixel_format;
     int sample_count;
@@ -2083,6 +2085,7 @@ typedef struct {
     int height;
     int depth;
     int num_mipmaps;
+    bool autogen_mipmaps;
     sg_usage usage;
     sg_pixel_format pixel_format;
     int sample_count;
@@ -2176,6 +2179,7 @@ typedef struct {
     int height;
     int depth;
     int num_mipmaps;
+    bool autogen_mipmaps;
     sg_usage usage;
     sg_pixel_format pixel_format;
     int sample_count;
@@ -2336,6 +2340,7 @@ typedef struct {
     int height;
     int depth;
     int num_mipmaps;
+    bool autogen_mipmaps;
     sg_usage usage;
     sg_pixel_format pixel_format;
     int sample_count;
@@ -2520,6 +2525,7 @@ typedef struct {
     int height;
     int depth;
     int num_mipmaps;
+    bool autogen_mipmaps;
     sg_usage usage;
     sg_pixel_format pixel_format;
     int sample_count;
@@ -2697,6 +2703,9 @@ typedef enum {
     _SG_VALIDATE_IMAGEDESC_RT_NO_CONTENT,
     _SG_VALIDATE_IMAGEDESC_CONTENT,
     _SG_VALIDATE_IMAGEDESC_NO_CONTENT,
+    _SG_VALIDATE_IMAGEDESC_INVALID_MIPS,
+    _SG_VALIDATE_IMAGEDESC_NO_MSAA_MIPS,
+    _SG_VALIDATE_IMAGEDESC_ONLY_2D_MIPS,
 
     /* shader creation */
     _SG_VALIDATE_SHADERDESC_CANARY,
@@ -3028,6 +3037,16 @@ _SOKOL_PRIVATE void _sg_resolve_default_pass_action(const sg_pass_action* from, 
     }
 }
 
+/* compute mipmap level count from image dimensions */
+_SOKOL_PRIVATE int _sg_compute_mipmap_levels(int width, int height) {
+    int size = _sg_min(width, height);
+    int count;
+    for (count = 0; count < SG_MAX_MIPMAPS && size > 0; ++count) {
+        size = size >> 2;
+    }
+    return count;
+}
+
 /*== DUMMY BACKEND IMPL ======================================================*/
 #if defined(SOKOL_DUMMY_BACKEND)
 
@@ -3091,7 +3110,8 @@ _SOKOL_PRIVATE sg_resource_state _sg_create_image(_sg_image_t* img, const sg_ima
     img->width = desc->width;
     img->height = desc->height;
     img->depth = desc->depth;
-    img->num_mipmaps = desc->num_mipmaps;
+    img->num_mipmaps = desc->autogen_mipmaps ? _sg_compute_mipmap_levels(img->width, img->height) : desc->num_mipmaps;
+    img->autogen_mipmaps = desc->autogen_mipmaps;
     img->usage = desc->usage;
     img->pixel_format = desc->pixel_format;
     img->sample_count = desc->sample_count;
@@ -4014,6 +4034,16 @@ _SOKOL_PRIVATE bool _sg_gl_supported_texture_format(sg_pixel_format fmt) {
     }
 }
 
+_SOKOL_PRIVATE void _sg_generate_mips(const _sg_image_t* img) {
+    SOKOL_ASSERT(img);
+    SOKOL_ASSERT(img->autogen_mipmaps);
+    GLenum gl_img_target = img->gl_target;
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(gl_img_target, img->gl_tex[img->active_slot]); // Not sure if this should be active_slot or 0?
+    glGenerateMipmap(gl_img_target);
+    _SG_GL_CHECK_ERROR();
+}
+
 _SOKOL_PRIVATE sg_resource_state _sg_create_image(_sg_image_t* img, const sg_image_desc* desc) {
     SOKOL_ASSERT(img && desc);
     _SG_GL_CHECK_ERROR();
@@ -4022,7 +4052,8 @@ _SOKOL_PRIVATE sg_resource_state _sg_create_image(_sg_image_t* img, const sg_ima
     img->width = desc->width;
     img->height = desc->height;
     img->depth = desc->depth;
-    img->num_mipmaps = desc->num_mipmaps;
+    img->num_mipmaps = desc->autogen_mipmaps ? _sg_compute_mipmap_levels(img->width, img->height) : desc->num_mipmaps;
+    img->autogen_mipmaps = desc->autogen_mipmaps;
     img->usage = desc->usage;
     img->pixel_format = desc->pixel_format;
     img->sample_count = desc->sample_count;
@@ -4195,6 +4226,11 @@ _SOKOL_PRIVATE sg_resource_state _sg_create_image(_sg_image_t* img, const sg_ima
         }
     }
     _SG_GL_CHECK_ERROR();
+
+    if (img->autogen_mipmaps && img->usage == SG_USAGE_IMMUTABLE && !img->render_target) {
+        _sg_generate_mips(img);
+    }
+
     return SG_RESOURCESTATE_VALID;
 }
 
@@ -4759,6 +4795,21 @@ _SOKOL_PRIVATE void _sg_end_pass(void) {
         }
     }
     #endif
+    /* generate any mipmaps in render targets */
+    if (_sg.gl.cur_pass) {
+        /* check if the pass object is still valid */
+        const _sg_pass_t* pass = _sg.gl.cur_pass;
+        SOKOL_ASSERT(pass->slot.id == _sg.gl.cur_pass_id.id);
+        for (int att_index = 0; att_index < SG_MAX_COLOR_ATTACHMENTS; att_index++) {
+            const _sg_attachment_t* att = &pass->color_atts[att_index];
+            if (!att->image) {
+                break;
+            }
+            if (att->image->autogen_mipmaps) {
+                _sg_generate_mips(att->image);
+            }
+        }
+    }
     _sg.gl.cur_pass = 0;
     _sg.gl.cur_pass_id.id = SG_INVALID_ID;
     _sg.gl.cur_pass_width = 0;
@@ -5202,6 +5253,9 @@ _SOKOL_PRIVATE void _sg_update_image(_sg_image_t* img, const sg_image_content* d
             #endif
         }
     }
+    if (img->autogen_mipmaps) {
+        _sg_generate_mips(img);
+    }
 }
 
 /*== D3D11 BACKEND IMPLEMENTATION ============================================*/
@@ -5609,6 +5663,13 @@ _SOKOL_PRIVATE void _sg_d3d11_fill_subres_data(const _sg_image_t* img, const sg_
     }
 }
 
+_SOKOL_PRIVATE void _sg_generate_mips(const _sg_image_t* img) {
+    SOKOL_ASSERT(img);
+    SOKOL_ASSERT(img->autogen_mipmaps);
+    SOKOL_ASSERT(img->d3d11_srv)
+    ID3D11Device_GenerateMips(img->d3d11_srv);
+}
+
 _SOKOL_PRIVATE sg_resource_state _sg_create_image(_sg_image_t* img, const sg_image_desc* desc) {
     SOKOL_ASSERT(img && desc);
     SOKOL_ASSERT(!img->d3d11_tex2d && !img->d3d11_tex3d && !img->d3d11_texds && !img->d3d11_texmsaa);
@@ -5620,7 +5681,8 @@ _SOKOL_PRIVATE sg_resource_state _sg_create_image(_sg_image_t* img, const sg_ima
     img->width = desc->width;
     img->height = desc->height;
     img->depth = desc->depth;
-    img->num_mipmaps = desc->num_mipmaps;
+    img->num_mipmaps = desc->autogen_mipmaps ? _sg_compute_mipmap_levels(img->width, img->height) : desc->num_mipmaps;
+    img->autogen_mipmaps = desc->autogen_mipmaps;
     img->usage = desc->usage;
     img->pixel_format = desc->pixel_format;
     img->sample_count = desc->sample_count;
@@ -5695,6 +5757,9 @@ _SOKOL_PRIVATE sg_resource_state _sg_create_image(_sg_image_t* img, const sg_ima
                 d3d11_tex_desc.Format = img->d3d11_format;
                 d3d11_tex_desc.Usage = _sg_d3d11_usage(img->usage);
                 d3d11_tex_desc.CPUAccessFlags = _sg_d3d11_cpu_access_flags(img->usage);
+            }
+            if (img->autogen_mipmaps) {
+                d3d11_tex_desc.BindFlags |= D3D11_BIND_RENDER_TARGET | D3D11_RESOURCE_MISC_GENERATE_MIPS;
             }
             if (img->d3d11_format == DXGI_FORMAT_UNKNOWN) {
                 /* trying to create a texture format that's not supported by D3D */
@@ -5816,6 +5881,9 @@ _SOKOL_PRIVATE sg_resource_state _sg_create_image(_sg_image_t* img, const sg_ima
         d3d11_smp_desc.MaxLOD = desc->max_lod;
         hr = ID3D11Device_CreateSamplerState(_sg.d3d11.dev, &d3d11_smp_desc, &img->d3d11_smp);
         SOKOL_ASSERT(SUCCEEDED(hr) && img->d3d11_smp);
+    }
+    if (img->autogen_mipmaps && img->usage == SG_USAGE_IMMUTABLE && !img->render_target) {
+        _sg_generate_mips(img);
     }
     return SG_RESOURCESTATE_VALID;
 }
@@ -6320,6 +6388,19 @@ _SOKOL_PRIVATE void _sg_end_pass(void) {
                     (ID3D11Resource*) img->d3d11_texmsaa,   /* pSrcResource */
                     0,                                      /* SrcSubresource */
                     img->d3d11_format);
+            }
+        }
+    }
+    /* generate any mipmaps in render targets */
+    if (_sg.d3d11.cur_pass) {
+        SOKOL_ASSERT(_sg.d3d11.cur_pass->slot.id == _sg.d3d11.cur_pass_id.id);
+        for (int att_index = 0; att_index < SG_MAX_COLOR_ATTACHMENTS; att_index++) {
+            const _sg_attachment_t* att = &pass->color_atts[att_index];
+            if (!att->image) {
+                break;
+            }
+            if (att->image->autogen_mipmaps) {
+                _sg_generate_mips(att->image);
             }
         }
     }
@@ -7334,7 +7415,8 @@ _SOKOL_PRIVATE sg_resource_state _sg_create_image(_sg_image_t* img, const sg_ima
     img->width = desc->width;
     img->height = desc->height;
     img->depth = desc->depth;
-    img->num_mipmaps = desc->num_mipmaps;
+    img->num_mipmaps = desc->autogen_mipmaps ? _sg_compute_mipmap_levels(img->width, img->height) : desc->num_mipmaps;
+    img->autogen_mipmaps = desc->autogen_mipmaps;
     img->usage = desc->usage;
     img->pixel_format = desc->pixel_format;
     img->sample_count = desc->sample_count;
@@ -8492,6 +8574,9 @@ _SOKOL_PRIVATE const char* _sg_validate_string(_sg_validate_error_t err) {
         case _SG_VALIDATE_IMAGEDESC_RT_NO_CONTENT:      return "render target images cannot be initialized with content";
         case _SG_VALIDATE_IMAGEDESC_CONTENT:            return "missing or invalid content for immutable image";
         case _SG_VALIDATE_IMAGEDESC_NO_CONTENT:         return "dynamic/stream usage images cannot be initialized with content";
+        case _SG_VALIDATE_IMAGEDESC_INVALID_MIPS:		return "invalid to specify both num_mipmaps and autogen_mipmaps";
+        case _SG_VALIDATE_IMAGEDESC_NO_MSAA_MIPS:		return "multisampled images cannot have auto-generated mipmaps";
+        case _SG_VALIDATE_IMAGEDESC_ONLY_2D_MIPS:	    return "auto-generated mipmaps only supported for 2D images";
 
         /* shader creation */
         case _SG_VALIDATE_SHADERDESC_CANARY:                return "sg_shader_desc not initialized";
@@ -8670,6 +8755,9 @@ _SOKOL_PRIVATE bool _sg_validate_image_desc(const sg_image_desc* desc) {
             SOKOL_VALIDATE(desc->sample_count <= 1, _SG_VALIDATE_IMAGEDESC_MSAA_BUT_NO_RT);
             const bool valid_nonrt_fmt = !_sg_is_valid_rendertarget_depth_format(fmt);
             SOKOL_VALIDATE(valid_nonrt_fmt, _SG_VALIDATE_IMAGEDESC_NONRT_PIXELFORMAT);
+            SOKOL_VALIDATE(!desc->autogen_mipmaps || desc->num_mipmaps == 0, _SG_VALIDATE_IMAGEDESC_INVALID_MIPS);
+            SOKOL_VALIDATE(!desc->autogen_mipmaps || desc->sample_count == 1, _SG_VALIDATE_IMAGEDESC_NO_MSAA_MIPS);
+            SOKOL_VALIDATE(desc->type == SG_IMAGETYPE_2D, _SG_VALIDATE_IMAGEDESC_ONLY_2D_MIPS);
             /* FIXME: should use the same "expected size" computation as in _sg_validate_update_image() here */
             if (!ext && (usage == SG_USAGE_IMMUTABLE)) {
                 const int num_faces = desc->type == SG_IMAGETYPE_CUBE ? 6:1;
@@ -9146,6 +9234,7 @@ _SOKOL_PRIVATE sg_image_desc _sg_image_desc_defaults(const sg_image_desc* desc) 
     def.type = _sg_def(def.type, SG_IMAGETYPE_2D);
     def.depth = _sg_def(def.depth, 1);
     def.num_mipmaps = _sg_def(def.num_mipmaps, 1);
+    def.autogen_mipmaps = _sg_def(def.autogen_mipmaps, false);
     def.usage = _sg_def(def.usage, SG_USAGE_IMMUTABLE);
     def.pixel_format = _sg_def(def.pixel_format, SG_PIXELFORMAT_RGBA8);
     def.sample_count = _sg_def(def.sample_count, 1);
