@@ -5666,8 +5666,8 @@ _SOKOL_PRIVATE void _sg_d3d11_fill_subres_data(const _sg_image_t* img, const sg_
 _SOKOL_PRIVATE void _sg_generate_mips(const _sg_image_t* img) {
     SOKOL_ASSERT(img);
     SOKOL_ASSERT(img->autogen_mipmaps);
-    SOKOL_ASSERT(img->d3d11_srv)
-    ID3D11Device_GenerateMips(img->d3d11_srv);
+    SOKOL_ASSERT(img->d3d11_srv);
+    ID3D11DeviceContext_GenerateMips(_sg.d3d11.ctx, img->d3d11_srv);
 }
 
 _SOKOL_PRIVATE sg_resource_state _sg_create_image(_sg_image_t* img, const sg_image_desc* desc) {
@@ -6395,7 +6395,7 @@ _SOKOL_PRIVATE void _sg_end_pass(void) {
     if (_sg.d3d11.cur_pass) {
         SOKOL_ASSERT(_sg.d3d11.cur_pass->slot.id == _sg.d3d11.cur_pass_id.id);
         for (int att_index = 0; att_index < SG_MAX_COLOR_ATTACHMENTS; att_index++) {
-            const _sg_attachment_t* att = &pass->color_atts[att_index];
+            const _sg_attachment_t* att = &_sg.d3d11.cur_pass->color_atts[att_index];
             if (!att->image) {
                 break;
             }
